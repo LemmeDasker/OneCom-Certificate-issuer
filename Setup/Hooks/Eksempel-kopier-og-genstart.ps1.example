@@ -1,0 +1,108 @@
+﻿#requires -Version 5.1
+<#
+    EKSEMPEL PÅ HOOK - køres IKKE, før filen er omdøbt til at ende på .ps1.
+
+    Kopierer certifikatet til en webservers mappe, validerer eventuelt
+    konfigurationen og genstarter en Windows-tjeneste. Hvis valideringen
+    fejler, gendannes de tidligere filer, og tjenesten genstartes ikke.
+
+    Eksemplet er sat op til Apache i WAMP, men kan bruges til andre servere
+    ved at rette indstillingerne nedenfor.
+#>
+
+$ErrorActionPreference = 'Stop'
+
+# ------------------------------------------------------------
+# Indstillinger - ret disse
+# ------------------------------------------------------------
+
+# Mappen, som webserveren læser certifikatet fra.
+$TargetDirectory = "C:\wamp64\ssl\$env:CERT_DOMAIN"
+
+# Hvilke filer der kopieres:  kilde (miljøvariabel)  ->  filnavn i målmappen
+$Files = [ordered]@{
+    $env:CERT_FULLCHAIN = 'fullchain.cer'   # Apache: SSLCertificateFile
+    $env:CERT_KEY       = 'cert.key'        # Apache: SSLCertificateKeyFile
+}
+
+# Program, der validerer konfigurationen før genstart (tom = spring over).
+# '*' i stien er tilladt; den nyeste version vælges.
+$ValidateCommand   = 'C:\wamp64\bin\apache\apache*\bin\httpd.exe'
+$ValidateArguments = @('-t')
+
+# Windows-tjeneste, der skal genstartes (tom = ingen genstart).
+$ServiceName = 'wampapache64'
+
+# ------------------------------------------------------------
+# Selve hooket - normalt ingen grund til at rette herunder
+# ------------------------------------------------------------
+
+if (-not $env:CERT_DIR) {
+    Write-Output 'Hooket skal køres af Invoke-Certificate.ps1 (CERT_*-miljøvariabler mangler).'
+    exit 1
+}
+
+New-Item -ItemType Directory -Path $TargetDirectory -Force | Out-Null
+
+$stamp   = Get-Date -Format 'yyyyMMdd_HHmmss'
+$backups = @()
+
+foreach ($source in $Files.Keys) {
+    if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+        Write-Output "Kildefilen findes ikke: $source"
+        exit 1
+    }
+
+    $dest = Join-Path $TargetDirectory $Files[$source]
+    if (Test-Path -LiteralPath $dest -PathType Leaf) {
+        $bak = "$dest.$stamp.bak"
+        Copy-Item -LiteralPath $dest -Destination $bak -Force
+        $backups += [pscustomobject]@{ Original = $dest; Backup = $bak }
+    }
+
+    Copy-Item -LiteralPath $source -Destination $dest -Force
+    Write-Output "Kopieret: $dest"
+}
+
+function Restore-Backups {
+    foreach ($b in $backups) { Copy-Item -LiteralPath $b.Backup -Destination $b.Original -Force }
+    Write-Output 'De tidligere filer er gendannet.'
+}
+
+if ($ValidateCommand) {
+    $exe = Get-ChildItem -Path $ValidateCommand -File -ErrorAction SilentlyContinue |
+        Sort-Object FullName -Descending | Select-Object -First 1
+
+    if (-not $exe) {
+        Restore-Backups
+        Write-Output "Valideringsprogrammet blev ikke fundet: $ValidateCommand"
+        exit 1
+    }
+
+    $ErrorActionPreference = 'Continue'
+    $output = & $exe.FullName @ValidateArguments 2>&1 | ForEach-Object { "$_" }
+    $code = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
+
+    $output | ForEach-Object { Write-Output "  $_" }
+
+    if ($code -ne 0) {
+        Restore-Backups
+        Write-Output "Validering fejlede (exitkode $code). Tjenesten blev ikke genstartet."
+        exit 1
+    }
+}
+
+if ($ServiceName) {
+    Restart-Service -Name $ServiceName -Force
+    $svc = Get-Service -Name $ServiceName
+    $svc.WaitForStatus('Running', [TimeSpan]::FromSeconds(60))
+    Write-Output "Tjenesten $ServiceName er genstartet."
+}
+
+# Ryd backups ældre end 30 dage op.
+Get-ChildItem -LiteralPath $TargetDirectory -Filter '*.bak' -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-30) } |
+    Remove-Item -Force -ErrorAction SilentlyContinue
+
+exit 0
