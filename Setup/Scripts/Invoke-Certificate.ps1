@@ -44,16 +44,20 @@ param(
     [switch]$Force,
     [switch]$RunHooks,
 
-    [string]$ConfigPath = (Join-Path (Split-Path -Parent $PSScriptRoot) 'config.json')
+    [string]$ConfigPath
 )
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference    = 'SilentlyContinue'
 $ConfirmPreference     = 'None'
 
-. (Join-Path $PSScriptRoot 'CertificateCommon.ps1')
+# $PSScriptRoot kan være tom i param-standardværdier under Windows PowerShell 5.1.
+$scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
 
-$rootDir   = Split-Path -Parent $PSScriptRoot
+. (Join-Path $scriptDir 'CertificateCommon.ps1')
+
+$rootDir   = Split-Path -Parent $scriptDir
+if (-not $ConfigPath) { $ConfigPath = Join-Path $rootDir 'config.json' }
 $logDir    = Join-Path $rootDir 'Logs'
 $hookDir   = Join-Path $rootDir 'Hooks'
 $isProd    = ($Environment -eq 'Production')
@@ -115,7 +119,7 @@ try {
     # ------------------------------------------------------------
 
     Enable-Tls12
-    $module = Import-PoshAcmeWithPlugin -PluginSource (Join-Path $PSScriptRoot 'OneCom.ps1')
+    $module = Import-PoshAcmeWithPlugin -PluginSource (Join-Path $scriptDir 'OneCom.ps1')
     Write-Log "      Posh-ACME $($module.Version), OneCom-plugin fundet."
 
     # ------------------------------------------------------------
