@@ -1,0 +1,98 @@
+NYT: Automatisk installation
+Kopiér mappen Setup til PC'en og dobbeltklik Install.cmd. Den udfører
+alle trin nedenfor (undtagen WAMP-kopiering, som laves som et hook -
+se Setup\Hooks\README.txt). Beskrivelsen nedenfor er den manuelle metode.
+OneCom.ps1 ligger nu i Setup\Scripts\OneCom.ps1.
+
+1. Sæt execution policy
+Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy Unrestricted
+
+2. Installér Posh-ACME. Run as Administrator. Filerne ligger her: C:\Program Files\WindowsPowerShell\Modules\Posh-ACME
+Install-Module -Name Posh-ACME -Scope AllUsers -Force
+
+ADVARSEL: Kør kun dette trin på en ny PC.
+Kør IKKE Install-Module -Force (eller Update-Module Posh-ACME) igen på en
+maskine, der allerede er sat op. Det installerer en ny version af Posh-ACME
+i en ny mappe uden OneCom.ps1, og så fejler de planlagte kørsler med
+"Plugin OneCom was not discovered by Posh-ACME".
+Hvis du alligevel opdaterer Posh-ACME, så gentag trin 5 bagefter.
+
+3. Hent filerne
+Kopiér følgende fra repoets Certificate-mappe manuelt til C:\Certificate:
+  - save-onecom-credential.ps1
+  - one-staging-test.ps1     (manuel staging-test)
+  - one-production-test.ps1  (manuel produktion, kræver bekræftelse)
+  - one-staging.ps1          (automatiseret staging)
+  - one-production.ps1       (automatiseret produktion/fornyelse + deploy til WAMP)
+
+5. Kopiér pluginet OneCom.ps1 ind i Posh-ACME
+C:\Program Files\WindowsPowerShell\Modules\Posh-ACME\4.35.0\Plugins
+Import-Module Posh-ACME -Force
+Get-PAPlugin OneCom
+
+4. Fjern "blocked"-mærket
+Get-ChildItem . -Recurse | Unblock-File
+Unblock-File -LiteralPath 'C:\Certificate\one-production.ps1'
+
+6. Gem credentials sikkert med Windows DPAPI
+Kør som den Windows-bruger, der senere skal køre de planlagte opgaver.
+.\save-onecom-credential.ps1
+
+7. Kør STAGING først — ikke produktion direkte
+.\one-staging-test.ps1
+
+8. Derefter produktion (kun hvis staging gav RESULT: SUCCESS)
+.\one-production-test.ps1
+Skriv PROD, når scriptet beder om det.
+
+9. Certifikaterne ligger her:
+C:\Users\<user>\AppData\Local\Posh-ACME\LE_STAGE\<konto-id>\www.mydomain.com\
+
+
+
+
+9. Kopiér certifikatet til Apache/WAMP (første gang)
+$dst = 'C:\wamp64\ssl\www.mydomain.com'
+New-Item -ItemType Directory -Path $dst -Force | Out-Null
+
+Set-PAServer LE_PROD
+$c = Get-PACertificate -MainDomain 'www.mydomain.com'
+Copy-Item $c.FullChainFile (Join-Path $dst 'fullchain.cer') -Force
+Copy-Item $c.KeyFile       (Join-Path $dst 'cert.key')      -Force
+
+Genstart derefter Apache fra WAMP-menuen.
+(Alternativt: kør one-production.ps1 fra en administrator-prompt - den kopierer og genstarter selv.)
+
+10. Opsæt automatisk fornyelse i Task Scheduler
+one-production.ps1 fornyer certifikatet, kopierer det til WAMP, validerer
+Apache-konfigurationen (httpd -t) og genstarter servicen wampapache64.
+Genstart kræver administratorrettigheder.
+
+Opret en opgave (Opgavestyring -> Opret opgave):
+  - Generelt:  Kør som SAMME bruger som i trin 6
+               "Kør, uanset om brugeren er logget på eller ej"
+               "Kør med højeste rettigheder"   <-- påkrævet
+  - Udløser:   Dagligt (scriptet fornyer kun, når det er nødvendigt)
+  - Handling:  Program:    powershell.exe
+               Argumenter: -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "C:\sti\til\Certificate\one-production.ps1"
+
+Eller fra en PowerShell-prompt som administrator (som samme bruger):
+$action  = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "C:\sti\til\Certificate\one-production.ps1"'
+$trigger = New-ScheduledTaskTrigger -Daily -At 03:00
+Register-ScheduledTask -TaskName 'OneCom ACME production renewal' -Action $action -Trigger $trigger -User "$env:USERDOMAIN\$env:USERNAME" -Password (Read-Host 'Windows-adgangskode') -RunLevel Highest
+
+Valgfrit: opret tilsvarende opgave for one-staging.ps1 som sundhedstjek
+(den kopierer ikke noget til WAMP).
+
+Nyttige parametre til one-production.ps1:
+  -ApacheServiceName  (standard: wampapache64)
+  -ApacheHttpdPath    (standard: nyeste C:\wamp64\bin\apache\apache*\bin\httpd.exe)
+  -WampSslDirectory   (standard: C:\wamp64\ssl\www.mydomain.com)
+  -SkipDeploy         (forny kun, rør ikke WAMP)
+
+Logfiler:
+%LOCALAPPDATA%\Posh-ACME\Logs\onecom-acme-prod_*.log
+%LOCALAPPDATA%\Posh-ACME\Logs\onecom-acme-staging_*.log
+
+Produktionscertifikater:
+C:\Users\<user>\AppData\Local\Posh-ACME\LE_PROD\<konto-id>\www.mydomain.com\

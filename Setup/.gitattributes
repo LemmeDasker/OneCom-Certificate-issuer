@@ -1,0 +1,5 @@
+# Windows-filer: CRLF ved checkout og i ZIP-download.
+*.ps1      text eol=crlf
+*.cmd      text eol=crlf
+*.txt      text eol=crlf
+*.example  text eol=crlf
